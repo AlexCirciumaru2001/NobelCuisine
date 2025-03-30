@@ -1,4 +1,5 @@
 export interface MenuItem {
+  deleted_at: any;
   id: string;
   name: string;
   description: string;

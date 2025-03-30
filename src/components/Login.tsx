@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { LogIn, UserPlus, AlertCircle, Phone, Facebook, Mail, Check, Lock } from 'lucide-react';
-import { Provider } from '@supabase/supabase-js';
+import { User } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 
 export default function Login() {
   const [isSignUp, setIsSignUp] = useState(false);
@@ -15,12 +16,63 @@ export default function Login() {
   const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [authMethod, setAuthMethod] = useState<'email' | 'phone'>('email');
-  const { signIn, signUp, signInWithProvider, signInWithPhone, verifyPhoneOTP, verificationId, resetPassword } = useAuth();
+  const [showPassword, setShowPassword] = useState(false);
+  const { user, signIn, signUp, signInWithGoogle, signInWithPhone, verifyPhoneOTP, verificationId, resetPassword } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const isValidEmail = (email: string) => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const handleAdminSetup = async (user: User) => {
+    try {
+      // Update auth metadata
+      const { error } = await supabase.auth.updateUser({
+        data: { ...user.user_metadata, role: 'admin' }
+      });
+
+      if (!error) {
+        // Update profile table
+        await supabase.from('profiles').upsert({
+          id: user.id,
+          email: user.email,
+          role: 'admin',
+          updated_at: new Date().toISOString()
+        });
+
+        // Force session refresh
+        await supabase.auth.refreshSession();
+      }
+    } catch (error) {
+      console.error('Admin setup error:', error);
+    }
   };
+
+  useEffect(() => {
+    const checkAuthAndRedirect = async () => {
+      if (user) {
+        try {
+          // Get fresh session data
+          const { data: { session } } = await supabase.auth.getSession();
+          
+          if (session?.user) {
+            const role = session.user.user_metadata?.role;
+            const from = location.state?.from?.pathname || '/';
+            const redirectPath = role === 'admin' || role === 'manager' ? '/admin' : from;
+
+            navigate(redirectPath, { 
+              replace: true,
+              state: { from: location }
+            });
+          }
+        } catch (error) {
+          console.error('Redirect error:', error);
+          navigate('/', { replace: true });
+        }
+      }
+    };
+
+    checkAuthAndRedirect();
+  }, [user, navigate, location]);
+
+  const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
   const formatPhoneNumber = (value: string) => {
     const numbers = value.replace(/\D/g, '');
@@ -30,11 +82,10 @@ export default function Login() {
   };
 
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const formatted = formatPhoneNumber(e.target.value);
-    setPhone(formatted);
+    setPhone(formatPhoneNumber(e.target.value));
   };
 
-  async function handleSubmit(e: React.FormEvent) {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccess('');
@@ -42,11 +93,12 @@ export default function Login() {
 
     try {
       if (isForgotPassword) {
-        if (!email) throw new Error('Te rugăm să introduci adresa de email');
-        if (!isValidEmail(email)) throw new Error('Te rugăm să introduci o adresă de email validă');
+        if (!email || !isValidEmail(email)) {
+          throw new Error('Introdu o adresă de email validă');
+        }
         
         await resetPassword(email);
-        setSuccess('Instrucțiuni pentru resetarea parolei au fost trimise pe email!');
+        setSuccess('Instrucțiuni pentru resetarea parolei au fost trimise!');
         setIsForgotPassword(false);
         return;
       }
@@ -54,54 +106,65 @@ export default function Login() {
       if (authMethod === 'phone') {
         if (verificationId) {
           await verifyPhoneOTP(otp);
-          navigate('/');
         } else {
           await signInWithPhone(phone);
-          setSuccess('Cod de verificare trimis! Te rugăm să introduci codul primit prin SMS.');
+          setSuccess('Cod de verificare trimis! Verifică telefonul.');
         }
+        return;
+      }
+
+      // Email authentication
+      if (!email || (!isForgotPassword && !password)) {
+        throw new Error('Completează toate câmpurile');
+      }
+
+      if (!isValidEmail(email)) {
+        throw new Error('Email invalid');
+      }
+
+      if (!isForgotPassword && password.length < 6) {
+        throw new Error('Parolă prea scurtă (minim 6 caractere)');
+      }
+
+      if (isSignUp) {
+        await signUp(email, password);
+        setSuccess('Cont creat! Te poți autentifica.');
+        setIsSignUp(false);
+        setPassword('');
       } else {
-        // Form validation
-        if (!email || (!isForgotPassword && !password)) {
-          throw new Error('Te rugăm să completezi toate câmpurile.');
-        }
-
-        if (!isValidEmail(email)) {
-          throw new Error('Te rugăm să introduci o adresă de email validă.');
-        }
-
-        if (!isForgotPassword && password.length < 6) {
-          throw new Error('Parola trebuie să conțină cel puțin 6 caractere.');
-        }
-
-        if (isSignUp) {
-          await signUp(email, password);
-          setSuccess('Cont creat cu succes! Te poți autentifica acum.');
-          setIsSignUp(false);
-          setPassword('');
-        } else {
-          await signIn(email, password);
-          navigate('/');
+        const user = await signIn(email, password);
+        
+        // Handle admin setup
+        if (user?.email === 'admin@admin.com') {
+          await handleAdminSetup(user);
         }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'A apărut o eroare neașteptată';
-      setError(message);
+      const message = err instanceof Error ? err.message : 'Eroare neașteptată';
+      setError(message.replace(/email/i, 'adresă de email'));
       
-      if (message.includes('există deja un cont')) {
-        setIsSignUp(false);
-      }
+      if (message.includes('există deja')) setIsSignUp(false);
     } finally {
       setIsLoading(false);
     }
-  }
+  };
 
-  const handleSocialSignIn = async (provider: "google") => {
+  const handleSocialSignIn = async (provider: 'google' | 'facebook') => {
     try {
       setError('');
       setIsLoading(true);
-      await signInWithProvider(provider);
+      
+      const { error } = await signInWithGoogle(provider);
+      if (error) throw error;
+
+      // Wait for session refresh
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (session?.user?.email === 'admin@admin.com') {
+        await handleAdminSetup(session.user);
+      }
     } catch (error) {
-      setError('A apărut o eroare la autentificare. Te rugăm să încerci din nou.');
+      setError('Eroare la autentificare. Încearcă din nou.');
     } finally {
       setIsLoading(false);
     }
@@ -121,6 +184,7 @@ export default function Login() {
     setSuccess('');
     setPassword('');
   };
+
 
   return (
     <div className="min-h-[calc(100vh-20rem)] flex items-center justify-center px-4">
@@ -201,22 +265,41 @@ export default function Login() {
                   />
                 </div>
                 {!isForgotPassword && (
-                  <div>
-                    <label htmlFor="password" className="block text-sm font-medium text-gray-700">
-                      Parolă
-                    </label>
+                  <div className="relative">
+                  <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+                    Parolă
+                  </label>
+                  <div className="relative mt-1">
                     <input
                       id="password"
                       name="password"
-                      type="password"
+                      type={showPassword ? 'text' : 'password'}
                       autoComplete={isSignUp ? 'new-password' : 'current-password'}
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-primary focus:border-primary focus:z-10 sm:text-sm"
+                      className="appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-primary focus:border-primary focus:z-10 sm:text-sm pr-10"  // Added pr-10 for padding
                       placeholder="Minim 6 caractere"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-primary"
+                    >
+                      {showPassword ? (
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                      ) : (
+                        <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                        </svg>
+                      )}
+                    </button>
                   </div>
+                </div>
+                
                 )}
               </>
             ) : (
@@ -385,3 +468,5 @@ export default function Login() {
     </div>
   );
 }
+
+

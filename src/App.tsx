@@ -1,11 +1,11 @@
 // App.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { Utensils, Phone, User, ChefHat, LogOut, Menu as MenuIcon, ClipboardList, Calendar } from 'lucide-react';
 import { useAuth } from './hooks/useAuth';
 import { useLanguage } from './contexts/LanguageContext';
 import { supabase } from '../src/lib/supabase';
-
+import { useEffect } from 'react';
 // Components
 import Menu from './components/Menu';
 import Cart from './components/Cart';
@@ -17,7 +17,6 @@ import Checkout from './components/Checkout';
 import OrderSuccess from './components/OrderSuccess';
 import Orders from './components/Orders';
 import TableBooking from './components/TableBooking';
-import LoadingScreen from './components/LoadingScreen';
 import LanguageSwitch from './components/LanguageSwitch';
 import Profile from './components/Profile';
 import ResetPassword from './components/ResetPassword';
@@ -66,26 +65,17 @@ const TodosPage = () => {
 export default function App() {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const { user, signOut, loading } = useAuth();
+  const { user, signOut } = useAuth();
   const { t } = useLanguage();
 
   const isAdmin = user?.user_metadata?.role === 'admin';
   const phoneNumber = '0787295537';
-
-  const handleSignOut = () => {
-    signOut();
-    setIsMobileMenuOpen(false);
-  };
 
   const handlePhoneClick = (e: React.MouseEvent) => {
     if (window.innerWidth > 768) {
       e.preventDefault();
     }
   };
-
-  if (loading) {
-    return <LoadingScreen />;
-  }
 
   return (
     <Router>
@@ -165,7 +155,7 @@ export default function App() {
                       </Link>
                     )}
                     <button 
-                      onClick={handleSignOut}
+                      onClick={signOut}
                       className="text-gray-600 hover:text-primary transition-colors flex items-center"
                     >
                       <LogOut className="h-5 w-5 mr-1" />
@@ -259,7 +249,7 @@ export default function App() {
                     </Link>
                   )}
                   <button
-                    onClick={handleSignOut}
+                    onClick={signOut}
                     className="flex items-center space-x-2 text-gray-600 hover:text-primary transition-colors w-full p-3"
                   >
                     <LogOut className="h-5 w-5" />

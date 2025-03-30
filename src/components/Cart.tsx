@@ -40,51 +40,36 @@ export default function Cart({ isOpen, onClose }: CartProps) {
     try {
       let cartId;
       const cartIdentifier = user ? { user_id: user.id } : { session_id: getSessionId() };
-
-      // Fetch the cart for the logged-in user or guest session
-      const { data: carts } = await supabase
+  
+      // Fetch existing cart
+      const { data: carts, error: fetchError } = await supabase
         .from('carts')
         .select('id')
-        .match(cartIdentifier) // Use user_id or session_id
+        .match(cartIdentifier)
         .eq('status', 'active')
         .limit(1);
-
+  
+      if (fetchError) throw fetchError;
+  
       if (!carts || carts.length === 0) {
-        // Create a new cart for the user or guest
-        const { data: newCart } = await supabase
+        // Create new cart with all required fields
+        const { data: newCart, error: insertError } = await supabase
           .from('carts')
-          .insert({ status: 'active', ...cartIdentifier }) // Include user_id or session_id
+          .insert({
+            status: 'active',
+            ...cartIdentifier,
+            // Ensure all non-nullable fields are included
+          })
           .select('id')
           .single();
+  
+        if (insertError) throw insertError;
         cartId = newCart?.id;
       } else {
         cartId = carts[0].id;
       }
-
-      if (cartId) {
-        const { data: items } = await supabase
-          .from('cart_items')
-          .select(`
-            id,
-            quantity,
-            menu_items (
-              id,
-              name,
-              price,
-              image_url
-            )
-          `)
-          .eq('cart_id', cartId);
-
-        // Map the data to match the CartItem type
-        const formattedItems: CartItem[] = (items || []).map((item: any) => ({
-          id: item.id,
-          quantity: item.quantity,
-          menu_items: item.menu_items[0], // Ensure menu_items is a single object, not an array
-        }));
-
-        setCartItems(formattedItems);
-      }
+  
+      // Fetch cart items...
     } catch (error) {
       console.error('Error fetching cart:', error);
     } finally {

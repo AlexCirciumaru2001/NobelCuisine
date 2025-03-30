@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useLanguage } from '../contexts/LanguageContext';
 import { Package, Clock, MapPin, Table2, AlertCircle, Phone, Trash2, Edit2, CreditCard, Wallet, User, ChevronDown, ChevronUp } from 'lucide-react';
 
+// Interface definitions
 interface MenuItem {
   id: string;
   name: string;
@@ -16,7 +17,36 @@ interface OrderItem {
   menu_item: MenuItem;
 }
 
-interface Order {
+interface OrderUser {
+  email?: string;
+  full_name?: string | null;
+  avatar_url?: string | null;
+}
+
+interface SupabaseOrder {
+  id: string;
+  created_at: string;
+  status: string;
+  total: number;
+  delivery_time: number | null;
+  delivery_address: {
+    table_number?: number;
+    street?: string;
+    city?: string;
+    county?: string;
+    phone?: string;
+    notes?: string;
+    payment_method?: 'cash' | 'card';
+  };
+  user_id: string;
+  user: OrderUser | null;
+  items: Array<{
+    quantity: number;
+    menu_item: MenuItem | null;
+  }>;
+}
+
+interface TransformedOrder {
   id: string;
   created_at: string;
   status: string;
@@ -39,7 +69,7 @@ interface Order {
 }
 
 export default function AdminOrders() {
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [orders, setOrders] = useState<TransformedOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingDeliveryTime, setEditingDeliveryTime] = useState<{id: string, time: number} | null>(null);
   const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
@@ -48,7 +78,6 @@ export default function AdminOrders() {
   useEffect(() => {
     fetchOrders();
     
-    // Set up real-time subscription
     const subscription = supabase
       .channel('admin_orders')
       .on(
@@ -65,7 +94,7 @@ export default function AdminOrders() {
 
   async function fetchOrders() {
     try {
-      const { data: orders, error } = await supabase
+      const { data, error } = await supabase
         .from('orders')
         .select(`
           id,
@@ -91,29 +120,28 @@ export default function AdminOrders() {
             )
           )
         `)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false }) as { data: SupabaseOrder[] | null, error: any };
 
       if (error) throw error;
 
-      // Transform the data to match our interface
-      const transformedOrders = orders?.map(order => ({
+      const transformedOrders = (data || []).map(order => ({
         ...order,
-        user_email: order.user?.email,
-        user_full_name: order.user?.full_name,
-        user_avatar_url: order.user?.avatar_url,
+        user_email: order.user?.email || '',
+        user_full_name: order.user?.full_name || null,
+        user_avatar_url: order.user?.avatar_url || null,
         items: order.items
-          .filter(item => item.menu_item) // Filter out any null menu items
+          .filter(item => item.menu_item !== null)
           .map(item => ({
             quantity: item.quantity,
             menu_item: {
-              id: item.menu_item.id,
-              name: item.menu_item.name,
-              price: item.menu_item.price,
-              image_url: item.menu_item.image_url,
-              preparation_time: item.menu_item.preparation_time
+              id: item.menu_item!.id,
+              name: item.menu_item!.name,
+              price: item.menu_item!.price,
+              image_url: item.menu_item!.image_url,
+              preparation_time: item.menu_item!.preparation_time
             }
           }))
-      })) || [];
+      }));
 
       setOrders(transformedOrders);
     } catch (error) {

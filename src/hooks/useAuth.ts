@@ -1,90 +1,130 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { User, AuthError, Session } from '@supabase/supabase-js';
+import { User, Session, AuthResponse } from '@supabase/supabase-js';
 import { parsePhoneNumber, isValidPhoneNumber } from 'libphonenumber-js';
-
-type AuthResponse = {
-  data: {
-    user: User | null;
-    session?: Session | null;
+import ResetPassword from '../components/ResetPassword';
+type AuthUser = User & {
+  user_metadata?: {
+    avatar_url?: string;
+    full_name?: string;
   };
-  error: AuthError | null;
 };
 
 export function useAuth() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [verificationPhone, setVerificationPhone] = useState<string | null>(null);
   const [verificationId, setVerificationId] = useState<string | null>(null);
-  
-    useEffect(() => {
-      let isMounted = true;
-      const authChannel = new BroadcastChannel('auth');
-  
-      const initializeAuth = async () => {
-        try {
-          const { data: { session }, error } = await Promise.race([
-            supabase.auth.getSession(),
-            new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Auth timeout')), 5000)
-            )
-          ]);
-  
-          if (!isMounted) return;
-  
-          if (error || !session?.user) {
-            await supabase.auth.signOut();
-            localStorage.clear();
-            sessionStorage.clear();
-          }
-  
-          if (session?.user) {
-            const isValid = session.expires_at > Date.now() / 1000;
-            setUser(isValid ? session.user : null);
-          }
-        } catch (err) {
-          if (!isMounted) return;
-          console.error('Auth init error:', err);
-          await supabase.auth.signOut();
-        } finally {
-          if (isMounted) setLoading(false);
-        }
-      };
-  
-    const handleAuthStateChange = async (event: string, session: Session | null) => {
-      if (!isMounted) return;
-      const currentUser = session?.user ?? null;
-      setUser(currentUser);
-      authChannel.postMessage('SESSION_CHANGED');
 
-      if (event === 'SIGNED_IN' && currentUser) {
-        // Create/update user profile
-        await supabase.from('profiles').upsert({
-          id: currentUser.id,
-          email: currentUser.email,
-          phone: currentUser.phone,
-          updated_at: new Date().toISOString()
-        });
+  const safeSignOut = useCallback(async () => {
+    try {
+      // First check if there's a valid session
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.user) {
+        console.log('No active session to sign out from');
+        return;
+      }
+  
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+  
+    } catch (error) {
+      console.error('Sign out error:', error);
+      throw error instanceof Error ? error : new Error('Sign out failed');
+    } finally {
+      // Always clear local state
+      setUser(null);
+      localStorage.removeItem('sb-auth-token');
+      sessionStorage.clear();
+    }
+  }, []);
 
-        // Handle Google avatar
-        if (currentUser.app_metadata?.provider === 'google') {
-          const avatarUrl = currentUser.user_metadata?.avatar_url;
-          if (avatarUrl) {
-            await updateProfilePicture(currentUser.id, avatarUrl);
-          }
+  const handleAuthStateChange = useCallback(async (event: string, session: Session | null) => {
+    if (event === 'SIGNED_IN' && session?.user) {
+      setUser(session.user);
+    } else if (event === 'SIGNED_OUT') {
+      setUser(null);
+      localStorage.removeItem('sb-auth-token');
+      sessionStorage.clear();
+    }
+  }, [safeSignOut]);
+
+  const initializeAuth = useCallback(async () => {
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+
+      if (error) {
+        console.warn('Session check error:', error.message);
+        await safeSignOut();
+        return;
+      }
+
+      if (!session?.user) {
+        setUser(null);
+        return;
+      }
+
+      if (typeof session.expires_at !== 'number') {
+        console.error('Invalid session: Missing expiration timestamp');
+        await safeSignOut();
+        return;
+      }
+
+      const expiresAt = new Date(session.expires_at * 1000);
+      if (expiresAt <= new Date()) {
+        console.log('Session expired');
+        await safeSignOut();
+        return;
+      }
+
+      setUser(session.user);
+    } catch (err) {
+      console.error('Auth initialization error:', err);
+      await safeSignOut();
+    }
+  }, [safeSignOut]);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (user) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.expires_at && session.expires_at * 1000 < Date.now() + 5 * 60 * 1000) {
+          await supabase.auth.refreshSession();
         }
+      }
+    }, 60 * 1000);
+
+    const authChannel = new BroadcastChannel('auth');
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(handleAuthStateChange);
+
+    initializeAuth();
+
+    authChannel.onmessage = (event) => {
+      if (event.data === 'SIGNED_IN' || event.data === 'SIGNED_OUT') {
+        initializeAuth();
       }
     };
 
-    initializeAuth();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(handleAuthStateChange);
-
     return () => {
-      isMounted = false;
-      authChannel.close();
+      clearInterval(interval);
       subscription?.unsubscribe();
+      authChannel.close();
     };
-  }, []);
+  }, [handleAuthStateChange, initializeAuth]);
+
+  const signOut = useCallback(async () => {
+    try {
+      // Check if user exists before attempting sign out
+      if (!user) {
+        console.log('No user to sign out');
+        return;
+      }
+      await safeSignOut();
+    } catch (error) {
+      console.error('Sign out error:', error);
+      throw error;
+    }
+  }, [user, safeSignOut]);
 
 
   const validatePassword = (password: string) => {
@@ -125,7 +165,7 @@ export function useAuth() {
         options: {
           redirectTo: window.location.origin,
           queryParams: {
-            access_type: 'offline',
+            access_type: 'online',
             prompt: 'consent'
           }
         }
@@ -135,6 +175,19 @@ export function useAuth() {
       return data;
     } catch (error) {
       throw error instanceof Error ? error : new Error('Autentificarea cu Google a eșuat.');
+    }
+  };
+
+  const signInWithFacebook = async () => {
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'facebook',
+        options: { redirectTo: window.location.origin }
+      });
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      throw error instanceof Error ? error : new Error('Facebook login failed');
     }
   };
 
@@ -209,49 +262,44 @@ export function useAuth() {
     }
   };
 
-  const signOut = async () => {
-    try {
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
-    } catch (error) {
-      throw error instanceof Error ? error : new Error('Eroare la deconectare.');
-    }
-  };
-
   const resetPassword = async (email: string) => {
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`
-      });
-
+      const { error } = await supabase.auth.resetPasswordForEmail(email);
       if (error) throw error;
-    } catch (error) {
-      throw error instanceof Error ? error : new Error('Eroare la trimiterea email-ului.');
+    } catch (err) {
+      throw err instanceof Error ? err : new Error('Password reset failed');
+    } finally {
     }
   };
-
-  const confirmPasswordReset = async (password: string, token: string) => {
+  
+  const confirmPasswordReset = async (email: string, password: string, token: string) => {
     try {
-      console.log('Sending request with:', { token, password });
-      
-      const response = await fetch('/api/reset-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, newPassword: password }),
-      });
-  
-      const responseData = await response.text();
-      console.log('Raw response:', responseData);
-  
-      if (!response.ok) {
-        const error = responseData ? JSON.parse(responseData) : {};
-        throw new Error(error.message || `HTTP error! Status: ${response.status}`);
+      // Validate password requirements
+      if (password.length < 8 || !/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(password)) {
+        throw new Error('Password must contain at least 8 characters with uppercase, lowercase, and number');
       }
   
-      return JSON.parse(responseData);
+      // Verify OTP with email and token
+      const { error: verifyError } = await supabase.auth.verifyOtp({
+        type: 'recovery',
+        email,    // Add email parameter
+        token,    // Token from URL
+      });
+  
+      if (verifyError) throw verifyError;
+  
+      // Update password
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      if (updateError) throw updateError;
+  
+      return { success: true, message: 'Password updated successfully' };
     } catch (err) {
-      console.error('Full error:', err);
-      throw new Error(err.message || 'Failed to reset password. Please try again.');
+      console.error('Password reset error:', err);
+      throw new Error(
+        err instanceof Error 
+          ? err.message.includes('invalid') ? 'Invalid or expired token' : err.message
+          : 'Password reset failed'
+      );
     }
   };
 
@@ -271,16 +319,19 @@ export function useAuth() {
 
   return {
     user,
-    loading,
     verificationId,
     verificationPhone,
     signIn,
+    resetPassword,
     signInWithGoogle,
+    signInWithFacebook,
     signInWithPhone,
     verifyPhoneOTP,
     signUp,
     signOut,
-    resetPassword,
+    ResetPassword,
     confirmPasswordReset,
   };
 }
+
+

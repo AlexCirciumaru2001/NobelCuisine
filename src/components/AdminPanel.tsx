@@ -65,6 +65,7 @@ export default function AdminPanel() {
     }]);
 
     if (error) {
+      console.log("error");
       console.error('Error adding item:', error);
       return;
     }

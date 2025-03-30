@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import React, { useEffect, useState, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { AlertCircle, Check, Lock } from 'lucide-react';
 
@@ -9,52 +9,65 @@ export default function ResetPassword() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [searchParams] = useSearchParams();
+  const [resetParams, setResetParams] = useState<{ token?: string; email?: string }>({});
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const parametersSet = useRef(false);
   const { confirmPasswordReset } = useAuth();
   const navigate = useNavigate();
 
-  // Unified token extraction from both query and hash parameters
-  const getToken = () => {
-    const queryToken = searchParams.get('code');
+  useEffect(() => {
+    if (parametersSet.current) return;
+    
+    const params = new URLSearchParams(window.location.search);
     const hashParams = new URLSearchParams(window.location.hash.substring(1));
-    return queryToken || hashParams.get('code');
-  };
+    
+    const token = params.get('token') || hashParams.get('token') || 
+                  params.get('code') || hashParams.get('code');
+    const email = decodeURIComponent(
+      params.get('email') || hashParams.get('email') || 
+      params.get('email_address') || hashParams.get('email_address') || ''
+    );
+    
+    if (!token || !email) {
+      setError('Link invalid sau expirat. Te rugăm să soliciți un link nou.');
+    }
+    
+    setResetParams({ token, email });
+    parametersSet.current = true;
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }, []);
 
-  const token = getToken();
-
-  async function handleSubmit(e: React.FormEvent) {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccess('');
+    setIsLoading(true);
+
+    const { token, email } = resetParams;
     
-    if (!token) {
-      setError('Invalid or expired reset link. Please request a new one.');
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setError('Passwords do not match!');
-      return;
-    }
-
-    if (password.length < 8 || !/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(password)) {
-      setError('Password must contain at least 8 characters, one uppercase, one lowercase letter, and one number');
-      return;
-    }
-
     try {
-      await confirmPasswordReset(password, token);
-      setSuccess('Password reset successfully! Redirecting to login...');
+      if (!token || !email) {
+        throw new Error('Parametrii de resetare lipsă');
+      }
+
+      if (password !== confirmPassword) {
+        throw new Error('Parolele nu coincid!');
+      }
+
+      if (password.length < 8 || !/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(password)) {
+        throw new Error('Parola trebuie să conțină minim 8 caractere, o literă mare, o literă mică și un număr');
+      }
+
+      await confirmPasswordReset(email, password, token);
+      setSuccess('Parola a fost resetată cu succes! Redirecționare...');
       setTimeout(() => navigate('/login'), 2000);
     } catch (err) {
-      const message = err instanceof Error 
-        ? err.message.includes('invalid') ? 'Invalid or expired token' : err.message
-        : 'An unexpected error occurred';
-      setError(message);
+      setError(err instanceof Error ? err.message : 'Eroare la resetarea parolei');
     } finally {
       setIsLoading(false);
     }
-  }
+  };
 
   return (
     <div className="min-h-[calc(100vh-20rem)] flex items-center justify-center px-4">
@@ -83,35 +96,72 @@ export default function ResetPassword() {
           )}
 
           <div className="space-y-4">
-            <div>
+            <div className="relative">
               <label htmlFor="password" className="block text-sm font-medium text-gray-700">
                 Parolă nouă
               </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-primary focus:border-primary focus:z-10 sm:text-sm"
-                placeholder="Minim 6 caractere"
-              />
+              <div className="relative mt-1">
+                <input
+                  id="password"
+                  name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-primary focus:border-primary focus:z-10 sm:text-sm pr-10"
+                  placeholder="Minim 8 caractere"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-primary"
+                >
+                  {showPassword ? (
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                  ) : (
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
-            <div>
+
+            <div className="relative">
               <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700">
                 Confirmă parola
               </label>
-              <input
-                id="confirmPassword"
-                name="confirmPassword"
-                type="password"
-                required
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className="mt-1 appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-primary focus:border-primary focus:z-10 sm:text-sm"
-                placeholder="Introdu din nou parola"
-              />
+              <div className="relative mt-1">
+                <input
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  type={showConfirmPassword ? 'text' : 'password'}
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="appearance-none rounded-md relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-primary focus:border-primary focus:z-10 sm:text-sm pr-10"
+                  placeholder="Introdu din nou parola"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-primary"
+                >
+                  {showConfirmPassword ? (
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                  ) : (
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
 
